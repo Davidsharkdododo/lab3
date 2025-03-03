@@ -27,7 +27,10 @@ class LaneDetectionNode(DTROS):
         self.wheels_topic = f"/{self._vehicle_name}/wheels_driver_node/wheels_cmd"
         self._left_encoder_topic = f"/{self._vehicle_name}/left_wheel_encoder_node/tick"
         self._right_encoder_topic = f"/{self._vehicle_name}/right_wheel_encoder_node/tick"      
-        
+        # Initialize a queue to store detected lane colors
+        self.q = []
+        # Flag to prevent overlapping maneuvers
+        self.maneuver_active = False
         # Camera calibration parameters.
         self.camera_matrix = np.array([[324.2902860459547, 0.0, 308.7011853118279],
                                        [0.0, 322.6864063251382, 215.88480909087127],
@@ -66,10 +69,7 @@ class LaneDetectionNode(DTROS):
         
         self.rate = rospy.Rate(3)
         
-        # Initialize a queue to store detected lane colors
-        self.q = []
-        # Flag to prevent overlapping maneuvers
-        self.maneuver_active = False
+        
 
     def undistort_image(self, image):
         return cv2.undistort(image, self.camera_matrix, self.dist_coeffs)
@@ -230,7 +230,7 @@ class LaneDetectionNode(DTROS):
                 elif color == "green":
                     # Green lane maneuver: turn left.
                     self.set_led_color(0, 1, 0)
-                    self.dynamic_motor_control(0.4, 0.586, 0.377, 0.534)
+                    self.dynamic_motor_control(0.44, 0.55, 0.767, 0.956)
                     self.set_led_color(1, 0, 0)
                 # Reset the flag to allow new detections.
                 self.maneuver_active = False
