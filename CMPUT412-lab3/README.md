@@ -12,12 +12,12 @@ Before running the code, please navigate to /Mobile-Robotics/packages/my_package
 
 ### 3. Build the program
 
-After that open this folder in the terminal. Once you are in the folder, type in the terminal: dts devel build -f to build the program in the duckiebot.
+After that open this folder in the terminal. Once you are in the folder, type in the terminal: dts devel build - H [Vehicle_name] -f to build the program in the duckiebot.
 
 
 ### 4. Run the program
 
-To run the program, type in the terminal: dts devel run -R [Vehicle_name] -L wheel-control. Replace [Vehicle_name] with your robot's name.
+To run the program, type in the terminal: dts devel run -H [Vehicle_name] -L part2. Replace [Vehicle_name] with your robot's name.
 
 
 ### 5. Plotting trajectory
