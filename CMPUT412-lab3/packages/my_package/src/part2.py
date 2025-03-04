@@ -21,7 +21,7 @@ class LaneControllerNode(DTROS):
         
         # Get control parameters from ROS parameters.
         self.controller_type = "P"
-        self.Kp = 0.5
+        self.Kp = -0.25
         self.Ki = 0.025
         self.Kd = 0.05
         self.base_speed = 0.4
@@ -55,7 +55,8 @@ class LaneControllerNode(DTROS):
         # Color detection parameters (HSV ranges).
         self.hsv_ranges = {
             "yellow": (np.array([20, 70, 100]), np.array([30, 255, 255])),
-            "white": (np.array([0, 0, 216]), np.array([179, 55, 255]))
+            # "white": (np.array([0, 0, 216]), np.array([179, 55, 255]))
+            "white": (np.array([0, 0, 216*0.85]), np.array([179*1.1, 55*1.2, 255]))
         }
         
         # Initialize CvBridge.
@@ -148,7 +149,215 @@ class LaneControllerNode(DTROS):
             error = 20*(white_distance-0.09)
 
         return output, detections, error
+    
+
+
         
+    def detect_lane_with_edges(self, image):
+        """
+        Detect white lane lines using Canny edge detection and linear estimation.
+        Returns the same format as detect_lane_color but uses edge detection.
+        """
+        # First, undistort the image
+        undistorted = self.undistort_image(image)
+        
+        # Create a copy for visualization
+        output = image.copy()
+        
+        # Convert to grayscale for edge detection
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        
+        # Create mask for white color (similar to original function)
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        white_mask = cv2.inRange(hsv, self.hsv_ranges["white"][0], self.hsv_ranges["white"][1])
+        
+        # Apply the mask to the grayscale image
+        masked_gray = cv2.bitwise_and(gray, gray, mask=white_mask)
+        
+        # Apply Canny edge detection
+        edges = cv2.Canny(masked_gray, 50, 150)
+        
+        # Define region of interest - focus on the bottom half of the image
+        height, width = edges.shape
+        roi_mask = np.zeros_like(edges)
+        roi_vertices = np.array([[(0, height), (0, height/2), 
+                                (width, height/2), (width, height)]], dtype=np.int32)
+        cv2.fillPoly(roi_mask, roi_vertices, 255)
+        masked_edges = cv2.bitwise_and(edges, roi_mask)
+        
+        # Find line segments using probabilistic Hough transform
+        line_segments = cv2.HoughLinesP(masked_edges, 1, np.pi/180, 30, 
+                                    minLineLength=20, maxLineGap=5)
+        
+        detections = {}
+        error = None
+        
+        # If lines were found
+        if line_segments is not None and len(line_segments) > 0:
+            # Calculate average slope and intercept
+            slopes = []
+            intercepts = []
+            
+            for line in line_segments:
+                x1, y1, x2, y2 = line[0]
+                # Skip horizontal lines (avoid division by zero)
+                if x2 != x1:
+                    slope = (y2 - y1) / (x2 - x1)
+                    intercept = y1 - slope * x1
+                    
+                    # Only consider slopes that might be lane lines (filter out horizontal lines)
+                    if abs(slope) > 0.3:
+                        slopes.append(slope)
+                        intercepts.append(intercept)
+                        # Draw the line segment
+                        cv2.line(output, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            
+            if slopes:
+                # Calculate average slope and intercept
+                avg_slope = np.mean(max(slopes, 3))
+                avg_intercept = np.mean(intercepts)
+                
+                # Calculate points for the average line
+                y1 = height  # Bottom of the image
+                y2 = int(height * 0.6)  # 60% up the image
+                x1 = int((y1 - avg_intercept) / avg_slope)
+                x2 = int((y2 - avg_intercept) / avg_slope)
+                
+                # Draw the average line
+                cv2.line(output, (x1, y1), (x2, y2), (0, 0, 255), 3)
+                
+                # Calculate the nearest point on the line (use bottom of image)
+                nearest_point = np.array([x1, y1])
+                
+                # Apply homography to get distance (similar to original function)
+                point_homog = np.array([nearest_point[0], nearest_point[1], 1])
+                ground_point = self.homography @ point_homog
+                ground_point /= ground_point[2]  # Normalize
+                distance = np.sqrt(ground_point[0]**2 + ground_point[1]**2)
+                
+                # Store detection similarly to original function
+                detections["white"] = (nearest_point[0], distance)
+                
+                # Annotate the image
+                cv2.circle(output, tuple(nearest_point), 5, (0, 255, 0), -1)
+                cv2.putText(
+                    output,
+                    f"white: {distance:.2f}m, slope: {avg_slope:.2f}",
+                    (nearest_point[0] + 10, nearest_point[1]),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 255, 0),
+                    2
+                )
+                
+                # Calculate error based on slope
+                # Adjust target_slope as needed - will tune this later as mentioned
+                target_slope = 0  # Example value, adjust as needed
+                error = avg_slope - target_slope
+
+
+        lane_msg = self.bridge.cv2_to_imgmsg(output, encoding="bgr8")
+        self.pub_lane.publish(lane_msg)
+        
+        # Return detections, error, and the visualization image
+        return output, detections, error
+
+    def detect_lane_fast(self, image):
+        """
+        Optimized fast lane detection using fixed-height scanning.
+        Scans for white pixels at fixed heights in the bottom half of the image,
+        checking only every third pixel for speed.
+        """
+        # Convert to HSV and get white mask - only process bottom half
+        full_height, width = image.shape[:2]
+        half_height_start = full_height // 2
+        bottom_half = image[half_height_start:full_height, :]
+        
+        # Convert to HSV and create mask only for bottom half
+        hsv = cv2.cvtColor(bottom_half, cv2.COLOR_BGR2HSV)
+        white_mask = cv2.inRange(hsv, self.hsv_ranges["white"][0], self.hsv_ranges["white"][1])
+        
+        # Get dimensions and center
+        height = full_height - half_height_start
+        center_x = width // 2
+        
+        # Define scan heights
+        scan_heights = [int(height * pct) for pct in [0, 0.10, 0.20, 0.40, 0.70]]
+        
+        # Create a simple output image (minimal drawing for speed)
+        output = image.copy()
+        bottom_half_out = output[half_height_start:full_height, :]
+        
+        # Base weights (will be redistributed if points are missing)
+        base_weights = [0.1, 0.15, 0.2, 0.25, 0.3]
+        
+        offsets = []
+        valid_detections = []
+        
+        # Loop through each scan height
+        for i, y in enumerate(scan_heights):
+            # Scan from center to right edge every 3 pixels for speed
+            for x in range(center_x, width, 3):
+                # If we found a white pixel
+                if white_mask[y, x] > 0:
+                    offset = x - center_x
+                    offsets.append(offset)
+                    valid_detections.append(i)
+                    
+                    # Minimal visualization - just circles at detection points
+                    cv2.circle(bottom_half_out, (x, y), 3, (0, 255, 0), -1)
+                    break
+        
+        # Calculate error - redistribute weights for missing points
+        error = None
+        if offsets:
+            # Find the bottom-most detection (should be the most reliable)
+            bottom_idx = valid_detections.index(max([i for i in valid_detections]))
+            bottom_offset = offsets[bottom_idx]
+            
+            # Filter out detections that are too far from the bottom detection
+            # (likely background noise or other lane markers)
+            max_deviation = 10  # maximum allowed pixel deviation from bottom point
+            
+            filtered_offsets = []
+            filtered_detections = []
+            
+            for i, offset in enumerate(offsets):
+                if offset - bottom_offset <= max_deviation:
+                    filtered_offsets.append(offset)
+                    filtered_detections.append(valid_detections[i])
+                else:
+                    # Draw rejected points in red
+                    detection_idx = valid_detections[i]
+                    y = scan_heights[detection_idx]
+                    x = center_x + offset
+                    cv2.circle(bottom_half_out, (x, y), 3, (0, 0, 255), -1)
+            
+            # Use the filtered detections
+            if filtered_offsets:
+                # Create new weights based on which points were detected
+                total_weight = sum([base_weights[i] for i in filtered_detections])
+                normalized_weights = [base_weights[i] / total_weight for i in filtered_detections]
+                
+                # Calculate weighted sum of offsets
+                weighted_offsets = [filtered_offsets[i] * normalized_weights[i] for i in range(len(filtered_offsets))]
+                error_raw = sum(weighted_offsets)
+                
+                # Scale the error
+                error = error_raw * 0.01 -1.2
+            
+            # Minimal text display
+            if len(valid_detections) < 3:
+                # If we have very few points, make text red as a warning
+                color = (0, 0, 255)
+            else:
+                color = (0, 255, 0)
+                
+            cv2.putText(bottom_half_out, f"{len(valid_detections)}/5 pts, err:{error:.3f}", 
+                    (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+        
+        return output, error
+
 
     
     def calculate_p_control(self, error, dt):
@@ -204,14 +413,20 @@ class LaneControllerNode(DTROS):
         cv_image = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="bgr8")
         # undistorted = self.undistort_image(cv_image)
         preprocessed = self.preprocess_image(cv_image)
-        colour_image, detections, error = self.detect_lane_color(preprocessed)
+        output, error = self.detect_lane_fast(preprocessed)
         # height, width = colour_image.shape[:2]
         # cropped_image = colour_image[height // 2:height, :]
         # lane_msg = self.bridge.cv2_to_imgmsg(cropped_image, encoding="bgr8")
-        # # self.pub_lane.publish(lane_msg)
+        # self.pub_lane.publish(lane_msg)
+        
+        # Publish the visualization image
+        lane_msg = self.bridge.cv2_to_imgmsg(output, encoding="bgr8")
+        self.pub_lane.publish(lane_msg)
+
+
         if error is not None:
-            detection_str = ", ".join([f"{color}: ({data[0]:.1f}, {data[1]:.2f}m)" for color, data in detections.items()])
-            rospy.loginfo("Control error: %.3f, %s", error, detection_str)
+            # detection_str = ", ".join([f"{color}: ({data[0]:.1f}, {data[1]:.2f}m)" for color, data in detections.items()])
+            rospy.loginfo("Control error: %.3f", error)
             control_output = self.get_control_output(error, dt)
             # rospy.loginfo("Control output: %.3f", control_output)
 
