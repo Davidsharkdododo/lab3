@@ -20,11 +20,17 @@ class LaneControllerNode(DTROS):
         self.wheels_topic = f"/{self._vehicle_name}/wheels_driver_node/wheels_cmd"
         
         # Get control parameters from ROS parameters.
-        self.controller_type = "PID"
-        self.Kp = 1
+        self.controller_type = "P"
+        self.Kp = 0.5
         self.Ki = 0.025
         self.Kd = 0.05
         self.base_speed = 0.4
+
+        # self.controller_type = rospy.get_param("~controller_type", "P")
+        # self.Kp = rospy.get_param("~Kp", 0.8)
+        # self.Ki = rospy.get_param("~Ki", 0.025)
+        # self.Kd = rospy.get_param("~Kd", 0.05)
+        # self.base_speed = rospy.get_param("~base_speed", 1.0)
         
         # Initialize control variables.
         self.prev_error = 0.0
@@ -115,7 +121,7 @@ class LaneControllerNode(DTROS):
                             nearest_point = cnt_points[min_idx]
             
             if nearest_point is not None:
-                # # Draw a circle on the nearest edge of the lane.
+                # Draw a circle on the nearest edge of the lane.
                 cv2.circle(output, tuple(nearest_point), 5, (0, 255, 0), -1)
                 cv2.putText(
                     output,
@@ -134,13 +140,15 @@ class LaneControllerNode(DTROS):
             white_u, white_distance = detections["white"]
             yellow_u, yellow_distance = detections["yellow"]
             error = yellow_distance - white_distance
-        #     yellow_u, yellow_distance = detections["yellow"]
-        #     error = 0.1 - yellow_distance
-        # elif "white" in detections:
-        #     white_u, white_distance = detections["white"]
-        #     error = 0.1 - white_distance
+        elif "yellow" in detections:
+            yellow_u, yellow_distance = detections["yellow"]
+            error = yellow_distance - 0.09
+        elif "white" in detections:
+            white_u, white_distance = detections["white"]
+            error = 20*(white_distance-0.09)
 
         return output, detections, error
+        
 
     
     def calculate_p_control(self, error, dt):
@@ -184,7 +192,7 @@ class LaneControllerNode(DTROS):
         cmd_msg.vel_left = left_speed
         cmd_msg.vel_right = right_speed
         self._publisher.publish(cmd_msg)
-        rospy.loginfo("Published wheel cmd: left=%.3f, right=%.3f", left_speed, right_speed)
+        # rospy.loginfo("Published wheel cmd: left=%.3f, right=%.3f", left_speed, right_speed)
     
     def callback(self, msg):
         current_time = rospy.Time.now()
@@ -196,15 +204,16 @@ class LaneControllerNode(DTROS):
         cv_image = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="bgr8")
         # undistorted = self.undistort_image(cv_image)
         preprocessed = self.preprocess_image(cv_image)
-        color_image, detections, error = self.detect_lane_color(preprocessed)
-        height, width = color_image.shape[:2]
-        cropped_image = color_image[height // 2:height, :]
-        lane_msg = self.bridge.cv2_to_imgmsg(cropped_image, encoding="bgr8")
-        self.pub_lane.publish(lane_msg)
+        colour_image, detections, error = self.detect_lane_color(preprocessed)
+        # height, width = colour_image.shape[:2]
+        # cropped_image = colour_image[height // 2:height, :]
+        # lane_msg = self.bridge.cv2_to_imgmsg(cropped_image, encoding="bgr8")
+        # # self.pub_lane.publish(lane_msg)
         if error is not None:
-            rospy.loginfo("Control error: %.3f", error)
+            detection_str = ", ".join([f"{color}: ({data[0]:.1f}, {data[1]:.2f}m)" for color, data in detections.items()])
+            rospy.loginfo("Control error: %.3f, %s", error, detection_str)
             control_output = self.get_control_output(error, dt)
-            rospy.loginfo("Control output: %.3f", control_output)
+            # rospy.loginfo("Control output: %.3f", control_output)
 
             self.publish_cmd(control_output)
 
